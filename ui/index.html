@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Training Monitor</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+</head>
+
+<body class="dark-theme">
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <main class="dashboard">
+        <header>
+            <h1>LLM Training <span class="accent">Monitor</span></h1>
+            <div class="header-right">
+                <div id="health-indicators"></div>
+                <div id="connection-status" class="badge">Checking connection...</div>
+            </div>
+        </header>
+
+        <!-- Quick Stats Summary -->
+        <section class="quick-stats glass">
+            <div class="stat-box">
+                <span class="stat-icon">📥</span>
+                <div class="stat-content">
+                    <span class="stat-value" id="downloads-count">0/0</span>
+                    <span class="stat-label">Downloads</span>
+                </div>
+            </div>
+            <div class="stat-box">
+                <span class="stat-icon">🔄</span>
+                <div class="stat-content">
+                    <span class="stat-value" id="current-activity">Ready</span>
+                    <span class="stat-label">Current Activity</span>
+                </div>
+            </div>
+            <div class="stat-box">
+                <span class="stat-icon">📉</span>
+                <div class="stat-content">
+                    <span class="stat-value" id="current-loss">—</span>
+                    <span class="stat-label">Loss</span>
+                </div>
+            </div>
+            <div class="stat-box">
+                <span class="stat-icon">⏱</span>
+                <div class="stat-content">
+                    <span class="stat-value" id="total-eta">—</span>
+                    <span class="stat-label">Est. Time</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Pipeline Timeline -->
+        <section class="pipeline-section glass">
+            <h2>Pipeline Progress</h2>
+            <div class="pipeline-container">
+                <div class="pipeline-timeline" id="pipeline-timeline"></div>
+                <div class="overall-progress-container">
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar" id="overall-progress" style="width: 0%"></div>
+                    </div>
+                    <span class="progress-text" id="overall-progress-text">0%</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="grid">
+            <!-- Downloads Card -->
+            <div class="card glass">
+                <h3>📦 Downloads</h3>
+                <div id="downloads-list" class="item-list"></div>
+            </div>
+
+            <!-- Processing Card -->
+            <div class="card glass">
+                <h3>⚙️ Processing</h3>
+                <div id="processing-list" class="item-list"></div>
+            </div>
+
+            <!-- Training Phases Card -->
+            <div class="card glass training-card">
+                <h3>🧠 Training Phases</h3>
+                <div id="training-list" class="item-list"></div>
+            </div>
+
+            <!-- Resources Card -->
+            <div class="card glass">
+                <h3>💻 Resources</h3>
+                <div class="resource-section">
+                    <div class="resource-item">
+                        <div class="resource-header">
+                            <span class="resource-label">CPU</span>
+                            <span class="resource-value" id="cpu-percent">—</span>
+                        </div>
+                        <div class="resource-bar-bg">
+                            <div class="resource-bar cpu-bar" id="cpu-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="resource-item">
+                        <div class="resource-header">
+                            <span class="resource-label">Memory</span>
+                            <span class="resource-value" id="memory-percent">—</span>
+                        </div>
+                        <div class="resource-bar-bg">
+                            <div class="resource-bar memory-bar" id="memory-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="resource-item" id="gpu-section" style="display: none;">
+                        <div class="resource-header">
+                            <span class="resource-label">GPU</span>
+                            <span class="resource-value" id="gpu-percent">—</span>
+                        </div>
+                        <div class="resource-bar-bg">
+                            <div class="resource-bar gpu-bar" id="gpu-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Size Card -->
+            <div class="card glass">
+                <h3>💾 Data Pipeline</h3>
+                <div class="data-size-section" id="data-size-section">
+                    <div class="data-item">
+                        <span class="data-label">raw/</span>
+                        <div class="data-bar-container">
+                            <div class="data-bar" id="raw-bar" style="width: 0%"></div>
+                        </div>
+                        <span class="data-value" id="raw-size">—</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">cleaned/</span>
+                        <div class="data-bar-container">
+                            <div class="data-bar" id="cleaned-bar" style="width: 0%"></div>
+                        </div>
+                        <span class="data-value" id="cleaned-size">—</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">tokenized/</span>
+                        <div class="data-bar-container">
+                            <div class="data-bar" id="tokenized-bar" style="width: 0%"></div>
+                        </div>
+                        <span class="data-value" id="tokenized-size">—</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">checkpoints/</span>
+                        <div class="data-bar-container">
+                            <div class="data-bar checkpoints-bar" id="checkpoints-bar" style="width: 0%"></div>
+                        </div>
+                        <span class="data-value" id="checkpoints-size">—</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Event Log -->
+        <section class="terminal-container card glass">
+            <div class="log-header">
+                <h3>📋 Event Log</h3>
+                <div class="log-filters">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="error">Errors</button>
+                    <button class="filter-btn" data-filter="download">Downloads</button>
+                    <button class="filter-btn" data-filter="stage">Processing</button>
+                    <button class="filter-btn" data-filter="phase">Training</button>
+                </div>
+            </div>
+            <div id="event-log" class="terminal font-mono"></div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>
