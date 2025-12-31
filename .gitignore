@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Environment Variables
+.env
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Data & Models
+data/
+checkpoints/
+
+# IDE/Tools
+.vscode/
+.idea/
+.gradio/
+.pytest_cache/
