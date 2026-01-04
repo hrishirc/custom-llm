@@ -19,6 +19,7 @@ logs/
 # Data & Models
 data/
 checkpoints/
+hf_space/
 
 # IDE/Tools
 .vscode/

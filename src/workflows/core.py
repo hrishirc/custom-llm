@@ -315,8 +315,7 @@ def train_phase_core(
     model_config = ModelConfig()
     model = create_model(model_config)
     
-    # Checkpoint resume handled inside trainer, but we can pass it
-    # Sort checkpoints numerically by step number (not alphabetically!)
+    # Find latest checkpoint for this phase
     import re
     def get_step_number(path):
         match = re.search(r'_step(\d+)\.pt$', str(path))
@@ -324,15 +323,25 @@ def train_phase_core(
     
     checkpoints = list(checkpoint_dir.glob(f"{phase_name}_step*.pt"))
     latest_ckpt = max(checkpoints, key=get_step_number) if checkpoints else None
+    
+    # Handle phase linking (load previous phase's final checkpoint for new phases)
+    if not latest_ckpt:
+        prev_phase_map = {
+            "2": "phase1_grammar_final.pt",
+            "2b": "phase2_vocabulary_final.pt"
+        }
+        prev_ckpt_name = prev_phase_map.get(phase)
         
-    if latest_ckpt:
-        checkpoint = torch.load(latest_ckpt, map_location="cpu", weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        start_step = checkpoint["state"]["global_step"]
-    else:
-        start_step = 0
-        
-    actual_start_step = max(start_step, resume_step)
+        if prev_ckpt_name:
+            prev_ckpt_path = checkpoint_dir / prev_ckpt_name
+            if prev_ckpt_path.exists():
+                print(f"Initializing Phase {phase} from previous phase checkpoint: {prev_ckpt_name}")
+                checkpoint = torch.load(prev_ckpt_path, map_location="cpu", weights_only=False)
+                # Load ONLY model weights - we want a fresh optimizer/scheduler for the new phase
+                model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+                print(f"Loaded weights from {prev_ckpt_name}")
+            else:
+                 print(f"Warning: Previous phase checkpoint {prev_ckpt_name} not found. Starting {phase} from scratch.")
     
     data_loader = CurriculumDataLoader(
         data_path=tokenized_path,
@@ -349,14 +358,17 @@ def train_phase_core(
         log_dir=log_dir / phase_name if log_dir else None,
     )
     
-    # Set trainer's internal step counter to match checkpoint (for correct naming)
-    if actual_start_step > 0:
-        trainer.state.global_step = actual_start_step
-        print(f"Resuming training from step {actual_start_step}")
+    # Load checkpoint using proper method (restores optimizer + scheduler state)
+    if latest_ckpt:
+        trainer.load_checkpoint(latest_ckpt)
+    elif resume_step > 0:
+        # If no checkpoint but resume_step is set (from DB), just set the step counter
+        trainer.state.global_step = resume_step
+        print(f"Resuming training from step {resume_step} (no checkpoint found)")
     
     # Patch for reporting
     original_opt_step = trainer.optimizer_step
-    steps_done = [actual_start_step]
+    steps_done = [trainer.state.global_step]
     
     def patched_opt_step():
         res = original_opt_step()
@@ -373,8 +385,7 @@ def train_phase_core(
         
     trainer.optimizer_step = patched_opt_step
     
-    remaining = total_steps - actual_start_step
-    metrics = trainer.train(total_steps=remaining, phase_name=phase_name)
+    metrics = trainer.train(total_steps=total_steps, phase_name=phase_name)
     
     final_ckpt = checkpoint_dir / f"{phase_name}_final.pt"
     

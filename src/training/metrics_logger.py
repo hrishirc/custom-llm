@@ -131,16 +131,18 @@ class MetricsLogger:
         logger.info(f"  TensorBoard: {tensorboard}, CSV: {csv_logging}, W&B: {wandb_project or 'disabled'}")
     
     def _init_csv(self):
-        """Initialize CSV file with headers."""
-        self.csv_file = open(self.csv_path, "w", newline="")
+        """Initialize CSV file with headers (append mode if exists)."""
+        file_exists = self.csv_path.exists() and self.csv_path.stat().st_size > 0
+        self.csv_file = open(self.csv_path, "a", newline="")
         self.csv_writer = csv.writer(self.csv_file)
-        # Write header
-        self.csv_writer.writerow([
-            "step", "timestamp", "loss", "learning_rate", 
-            "grad_norm_total", "weight_norm_total", "weight_update_ratio",
-            "step_time_ms", "tokens_per_sec", "memory_allocated_mb",
-            "phase", "frozen_layers", "context_length"
-        ])
+        # Only write header if file is new/empty
+        if not file_exists:
+            self.csv_writer.writerow([
+                "step", "timestamp", "loss", "learning_rate", 
+                "grad_norm_total", "weight_norm_total", "weight_update_ratio",
+                "step_time_ms", "tokens_per_sec", "memory_allocated_mb",
+                "phase", "frozen_layers", "context_length"
+            ])
         self.csv_file.flush()
     
     def compute_metrics(

@@ -136,7 +136,7 @@ class TrainingConfig:
     freeze_schedule: dict = None
     
     # Checkpointing
-    save_steps: int = 250
+    save_steps: int = 50
     eval_steps: int = 500
     logging_steps: int = 10
     
@@ -194,6 +194,7 @@ PHASE_CONFIGS = {
         learning_rate=3e-4,
         num_epochs=1,
         context_schedule={0.0: 128, 0.3: 256, 0.7: 512},
+        freeze_schedule={},  # Explicitly disable freezing for Phase 1
     ),
     "phase2_vocabulary": TrainingConfig(
         learning_rate=1e-4,  # Lower LR

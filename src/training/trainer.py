@@ -112,6 +112,9 @@ class Trainer:
         # State
         self.state = TrainerState()
         
+        # Pending scheduler state (loaded before scheduler exists)
+        self._pending_scheduler_state = None
+        
         # Logging - use new comprehensive MetricsLogger
         self.log_dir = Path(log_dir) if log_dir else None
         self.metrics_logger = None
@@ -256,10 +259,8 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
         
-        self.optimizer.zero_grad()
-        
-        if self.scheduler:
-            self.scheduler.step()
+
+
     
     def train(
         self,
@@ -287,16 +288,28 @@ class Trainer:
         # Create scheduler
         self._create_scheduler(total_steps)
         
+        # Apply buffered scheduler state if resuming
+        if self._pending_scheduler_state is not None:
+            self.scheduler.load_state_dict(self._pending_scheduler_state)
+            self._pending_scheduler_state = None
+            print(f"Restored scheduler state (last_epoch={self.scheduler.last_epoch})")
+        
         # Training loop
         running_loss = 0.0
         step_times = []
         
-        pbar = tqdm(total=total_steps, desc=phase_name)
+        pbar = tqdm(total=total_steps, initial=self.state.global_step, desc=phase_name)
         
         while self.state.global_step < total_steps:
             # Update progress-based settings
             progress = self.state.progress(total_steps)
             self._update_layer_freezing(progress)
+            
+            # Capture state for logging
+            current_frozen_layers = getattr(self.model, "_frozen_layers", 0)
+            if hasattr(self.model, "_orig_mod"):
+                 current_frozen_layers = getattr(self.model._orig_mod, "_frozen_layers", current_frozen_layers)
+
             
             # Get data loader for current context length
             loader = self.data_loader.get_loader(progress)
@@ -304,6 +317,9 @@ class Trainer:
             
             while self.state.global_step < total_steps:
                 step_start = time.time()
+                
+                # Zero gradients at start of step to ensure they persist for logging
+                self.optimizer.zero_grad()
                 
                 # Accumulation loop
                 for accum_step in range(self.config.gradient_accumulation_steps):
@@ -319,7 +335,12 @@ class Trainer:
                 
                 # Optimizer step
                 self.optimizer_step()
+                
+                # Capture LR before scheduling next step
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                
                 self.state.global_step += 1
+                pbar.update(1)
                 
                 step_time = time.time() - step_start
                 step_times.append(step_time)
@@ -328,11 +349,10 @@ class Trainer:
                 if self.state.global_step % self.config.logging_steps == 0:
                     avg_loss = running_loss / self.config.logging_steps
                     avg_time = sum(step_times[-100:]) / len(step_times[-100:])
-                    lr = self.scheduler.get_last_lr()[0]
                     
                     pbar.set_postfix({
                         "loss": f"{avg_loss:.4f}",
-                        "lr": f"{lr:.2e}",
+                        "lr": f"{current_lr:.2e}",
                         "s/step": f"{avg_time:.2f}",
                     })
                     
@@ -341,11 +361,8 @@ class Trainer:
                         # Compute current context length from data loader
                         context_len = self.data_loader.get_context_length(progress)
                         
-                        # Determine frozen layers count
-                        n_frozen = 0
-                        for threshold, layers in sorted(self.config.freeze_schedule.items()):
-                            if progress >= threshold:
-                                n_frozen = layers
+                        # Use captured frozen layers count (from start of step)
+                        n_frozen = current_frozen_layers
                         
                         # Compute detailed metrics every 10x logging interval
                         is_detailed = (self.state.global_step % (self.config.logging_steps * 10) == 0)
@@ -354,7 +371,7 @@ class Trainer:
                             model=self.model,
                             loss=avg_loss,
                             step=self.state.global_step,
-                            learning_rate=lr,
+                            learning_rate=current_lr,
                             step_time=avg_time,
                             tokens_processed=self.config.effective_batch_size * context_len,
                             batch_size=self.config.effective_batch_size,
@@ -368,9 +385,13 @@ class Trainer:
                     # Legacy TensorBoard (for backward compatibility)
                     if self.writer:
                         self.writer.add_scalar("train/loss", avg_loss, self.state.global_step)
-                        self.writer.add_scalar("train/lr", lr, self.state.global_step)
+                        self.writer.add_scalar("train/lr", current_lr, self.state.global_step)
                     
                     running_loss = 0.0
+                
+                # Scheduler step (after logging)
+                if self.scheduler:
+                    self.scheduler.step()
                 
                 # Checkpointing
                 if self.state.global_step % self.config.save_steps == 0:
@@ -386,7 +407,7 @@ class Trainer:
                         self.state.best_loss = eval_loss
                         self.save_checkpoint(f"{phase_name}_best")
                 
-                pbar.update(1)
+
                 
                 if self.state.global_step >= total_steps:
                     break
@@ -427,34 +448,59 @@ class Trainer:
         torch.save(checkpoint, checkpoint_path)
         print(f"Checkpoint saved: {checkpoint_path}")
         
-        # Cleanup old checkpoints - keep only last 30
-        self._cleanup_old_checkpoints(keep_last=30)
+        # Cleanup old checkpoints - keep only last 5
+        self._cleanup_old_checkpoints(keep_last=5)
     
-    def _cleanup_old_checkpoints(self, keep_last: int = 30):
-        """Delete old checkpoints, keeping only the most recent ones.
+    def _cleanup_old_checkpoints(self, keep_last: int = 5):
+        """Delete old checkpoints, keeping only the most recent ones and thinning older ones.
+        
+        Policy:
+        1. Keep the last `keep_last` checkpoints (default 5).
+        2. For older checkpoints, keep only those where step number is a multiple of 100 
+           (assuming save_steps=50, this means keeping every 2nd one).
         
         Args:
-            keep_last: Number of most recent checkpoints to keep
+            keep_last: Number of most recent checkpoints to always keep
         """
-        import os
+        import re
         
         # Get all checkpoint files (exclude 'best' and 'final' checkpoints)
         all_ckpts = list(self.checkpoint_dir.glob("*_step*.pt"))
         
+        if not all_ckpts:
+            return
+            
+        # Function to extract step number
+        def get_step(path):
+            match = re.search(r'_step(\d+)\.pt$', str(path))
+            return int(match.group(1)) if match else 0
+            
+        # Sort by step number (numeric sort is safer/more correct than mtime for this logic)
+        all_ckpts.sort(key=get_step)
+        
+        # Split into "to keep unconditionally" and "candidates for thinning"
         if len(all_ckpts) <= keep_last:
             return
+            
+        recent_ckpts = all_ckpts[-keep_last:]
+        older_ckpts = all_ckpts[:-keep_last]
         
-        # Sort by modification time (oldest first)
-        all_ckpts.sort(key=lambda p: p.stat().st_mtime)
+        # Calculate the "thinning interval" - we want verification every 1000 steps
+        thin_interval = 1000
         
-        # Delete oldest checkpoints
-        to_delete = all_ckpts[:-keep_last]
-        for ckpt in to_delete:
-            try:
-                ckpt.unlink()
-                print(f"Deleted old checkpoint: {ckpt.name}")
-            except Exception as e:
-                print(f"Warning: Failed to delete {ckpt}: {e}")
+        for ckpt in older_ckpts:
+            step = get_step(ckpt)
+            
+            # If step is NOT a multiple of thin_interval (e.g. 100), delete it
+            if step % thin_interval != 0:
+                try:
+                    ckpt.unlink()
+                    print(f"Deleted old checkpoint (thinning): {ckpt.name}")
+                except Exception as e:
+                    print(f"Warning: Failed to delete {ckpt}: {e}")
+            else:
+                # Keep it (it's a milestone checkpoint like 100, 200, etc.)
+                pass
     
     def load_checkpoint(self, path: Path):
         """Load training checkpoint."""
@@ -468,8 +514,12 @@ class Trainer:
         model_to_load.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
-        if checkpoint.get("scheduler_state_dict") and self.scheduler:
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if checkpoint.get("scheduler_state_dict"):
+            if self.scheduler:
+                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            else:
+                # Buffer for later application in train()
+                self._pending_scheduler_state = checkpoint["scheduler_state_dict"]
         
         state = checkpoint["state"]
         self.state.global_step = state["global_step"]
